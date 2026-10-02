@@ -1,0 +1,96 @@
+# Локальный мини-стенд разработки SBE-плагина (L1).
+#
+# Чтение боевых LLM/Базы знаний/почты идёт через центральный dev-gateway,
+# а ЗАПИСЬ — сюда: в локальный сервис (папка ./app-service) и его БД.
+#
+# Запуск:  ./up.sh
+# Токен:   ./bootstrap-local-token.sh
+#
+# sbe-core (исходники auth-service) ожидается рядом: ../sbe-core. Другой путь —
+# переменная SBE_CORE_DIR в .env.
+services:
+  auth-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: auth
+      POSTGRES_PASSWORD: auth
+      POSTGRES_DB: auth
+    volumes:
+      - auth_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth -d auth"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - dev
+
+  auth-service:
+    build: ${SBE_CORE_DIR:-../sbe-core}/auth-service
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://auth:auth@auth-db:5432/auth?sslmode=disable
+      PORT: "3000"
+      JWT_SECRET: local-dev-jwt
+      APPS_REGISTER_SECRET: local-dev-register
+      ALLOWED_EMAIL_DOMAIN: ${LOCAL_EMAIL_DOMAIN:-tn.ru}
+      # Приложение `dev` — под него выписывается локальный токен.
+      DEV_APP_ID: dev
+      DEV_APP_NAME: Стенд разработки
+      DEV_OWNER_EMAIL: ${LOCAL_EMAIL:-dev@tn.ru}
+      DEV_SERVICE_SECRET: ${LOCAL_SERVICE_SECRET:-local-dev-secret}
+      DEV_ALLOWED_APPS: ""
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      auth-db:
+        condition: service_healthy
+    networks:
+      - dev
+
+  app-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    volumes:
+      - app_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - dev
+
+  # Заготовка сервиса разработчика. Замените ./app-service своим кодом,
+  # сохранив имя сервиса и порт.
+  app:
+    build: ./app-service
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://app:app@app-db:5432/app?sslmode=disable
+      PORT: "3000"
+      DEV_APP_ID: dev
+      DEV_SERVICE_SECRET: ${LOCAL_SERVICE_SECRET:-local-dev-secret}
+      AUTH_SERVICE_URL: http://auth-service:3000
+    ports:
+      - "127.0.0.1:8080:3000"
+    depends_on:
+      app-db:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+    networks:
+      - dev
+
+volumes:
+  auth_pgdata:
+  app_pgdata:
+
+networks:
+  dev:
+    driver: bridge
